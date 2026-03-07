@@ -54,6 +54,25 @@ int setupServer(int port) {
     return server_fd;
 }
 
+void handleClient(int client_fd) {
+    char buffer[4096];
+    while (true) {
+        ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1); // Read the command from the client. The -1 is to leave space for the null terminator.
+        buffer[bytes_read] = '\0'; // Add the null terminator to the end of the buffer.
+        if (bytes_read < 0) {
+            std::cerr << "Failed to read from the client" << "\n"; // If the reading fails, exit the program.
+            break; // If the reading fails, break out of the loop.
+        }
+        if (bytes_read == 0) {
+            std::cout << "Client disconnected" << "\n"; // If the client disconnects, print a message to the console.
+            break; // If the client disconnects, break out of the loop.
+        }
+        std::cout << "Received command: " << buffer << "\n"; // Print the command to the console.
+    }
+    close(client_fd); // Close the client socket.
+    return; // Return from the function.
+}
+
 int main() {
     int serverFileDescriptor = setupServer(6379);
 
@@ -67,7 +86,7 @@ int main() {
             continue;
         }
         std::cout << "New Client Connected" << "\n";
-        close(client_fd);
+        handleClient(client_fd);
     }
     return 0;
 }
