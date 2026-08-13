@@ -14,6 +14,25 @@ std::string handlePing(const std::vector<std::string>& args) {
     return "+PONG\r\n";
 }
 
+std::string handleSet(const std::vector<std::string>& args) {
+    if (args.size() != 2)  {
+        return "-ERR wrong number of arguments for 'set' command\r\n";
+    }
+    store[args[0]] = args[1];
+    return "+OK\r\n";
+}
+
+std::string handleGet(const std::vector<std::string>& args) {
+    if (args.size() != 1) {
+        return "-ERR wrong number of arguments for 'get' command\r\n";
+    }
+    auto it = store.find(args[0]);
+    if (it == store.end()) {
+        return "$-1\r\n";
+    }
+    return "$" + std::to_string(it->second.size()) + "\r\n" + (it->second) + "\r\n";
+}
+
 std::unordered_map<std::string, std::function<std::string(const std::vector<std::string>&)>> dispatch;
 // Making sure the port is listening to the client
 int setupServer(int port) {
@@ -103,6 +122,8 @@ void handleClient(int client_fd) {
 
 int main() {
     dispatch["PING"] = handlePing;
+    dispatch["SET"] = handleSet;
+    dispatch["GET"] = handleGet;
 
     int serverFileDescriptor = setupServer(6379);
 
