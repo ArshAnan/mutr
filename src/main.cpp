@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstring>
+#include <string>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -31,6 +32,22 @@ std::string handleGet(const std::vector<std::string>& args) {
         return "$-1\r\n";
     }
     return "$" + std::to_string(it->second.size()) + "\r\n" + (it->second) + "\r\n";
+}
+
+std::string handleDel(const std::vector<std::string>& args) {
+    if (args.size() != 1) {
+        return "-ERR wrong number of arguments for 'del' command\r\n";
+    }
+    size_t deleted = 0;
+    auto it = store.find(args[0]);
+    if (it == store.end()) {
+        deleted = 0;
+    }
+    else {
+        deleted = 1;
+        store.erase(it->first);
+    }
+    return "+" + std::to_string(deleted) + "\r\n";
 }
 
 std::unordered_map<std::string, std::function<std::string(const std::vector<std::string>&)>> dispatch;
@@ -124,6 +141,7 @@ int main() {
     dispatch["PING"] = handlePing;
     dispatch["SET"] = handleSet;
     dispatch["GET"] = handleGet;
+    dispatch["DEL"] = handleDel;
 
     int serverFileDescriptor = setupServer(6379);
 
