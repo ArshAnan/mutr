@@ -1,4 +1,7 @@
 #include "resp.h"
+#include <optional>
+#include <string>
+#include <vector>
 
 // RESP Format: *<length of array>\r\n$<length of string>\r\n<string>\r\n...
 // Example: "*3\r\n$3\r\nSET\r\n$1\r\nK\r\n$1\r\nV\r\n"

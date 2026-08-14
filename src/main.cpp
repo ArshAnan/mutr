@@ -57,7 +57,7 @@ int setupServer(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0); // Asks the kernel to create a socket with IPv4 and TCP
     // The kernel simply returns a file descriptor (an integer) to the socket, that we will use to interact with the socket.
     if (server_fd < 0) {
-        std::cerr << "Failed to create a socket" << "\n";
+        std::cerr << "Failed to create a socket" << std::endl;
         exit(1);
     }
     int opt = 1; // 1 means true, 0 means false. We use to this to "enable this option".
@@ -73,7 +73,7 @@ int setupServer(int port) {
     // 4. The pointer to the option (opt)
     // 5. The size of the option (sizeof(opt))
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        std::cerr << "Failed to set socket options" << "\n";
+        std::cerr << "Failed to set socket options" << std::endl;
         close(server_fd);
         exit(1);
     }
@@ -85,18 +85,18 @@ int setupServer(int port) {
     address.sin_addr.s_addr = INADDR_ANY; // The IP address of the server. This is a 32-bit integer in network byte order. The use of "INADDR_ANY" means that the server will listen on all IP addresses.
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) { // Bind the socket to the address and port.
-        std::cerr << "Failed to bind the socket" << "\n"; // If the binding fails, exit the program.
+        std::cerr << "Failed to bind the socket" << std::endl; // If the binding fails, exit the program.
         close(server_fd);
         exit(1);
     }
 
     if (listen(server_fd, 128) < 0) { // Listen for incoming connections. The 128 is the backlog, which is the number of connections that can be queued up.
-        std::cerr << "Failed to listen to the socket" << "\n"; // If the listening fails, exit the program.
+        std::cerr << "Failed to listen to the socket" << std::endl; // If the listening fails, exit the program.
         close(server_fd);
         exit(1);
     }
 
-    std::cout << "Server is listening on port " << port << "\n"; // Print a message to the console to indicate that the server is listening on the port.
+    std::cout << "Server is listening on port " << port << std::endl; // Print a message to the console to indicate that the server is listening on the port.
 
     return server_fd;
 }
@@ -106,11 +106,11 @@ void handleClient(int client_fd) {
     while (true) {
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer) - 1); // Read the command from the client. The -1 is to leave space for the null terminator.
         if (bytes_read < 0) {
-            std::cerr << "Failed to read from the client" << "\n"; // If the reading fails, exit the program.
+            std::cerr << "Failed to read from the client" << std::endl; // If the reading fails, exit the program.
             break; // If the reading fails, break out of the loop.
         }
         if (bytes_read == 0) {
-            std::cout << "Client disconnected" << "\n"; // If the client disconnects, print a message to the console.
+            std::cout << "Client disconnected" << std::endl; // If the client disconnects, print a message to the console.
             break; // If the client disconnects, break out of the loop.
         }
         buffer[bytes_read] = '\0'; // Add the null terminator to the end of the buffer.
@@ -151,10 +151,10 @@ int main() {
     while (true) {
         int client_fd = accept(serverFileDescriptor, (struct sockaddr *)&client_address, &client_address_len);
         if (client_fd < 0) {
-            std::cerr << "Failed to accept the connection" << "\n";
+            std::cerr << "Failed to accept the connection" << std::endl;
             continue;
         }
-        std::cout << "New Client Connected" << "\n";
+        std::cout << "New Client Connected" << std::endl;
         handleClient(client_fd);
     }
     return 0;
