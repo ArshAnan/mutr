@@ -47,7 +47,7 @@ std::string handleDel(const std::vector<std::string>& args) {
         deleted = 1;
         store.erase(it->first);
     }
-    return "+" + std::to_string(deleted) + "\r\n";
+    return ":" + std::to_string(deleted) + "\r\n";
 }
 
 std::unordered_map<std::string, std::function<std::string(const std::vector<std::string>&)>> dispatch;
