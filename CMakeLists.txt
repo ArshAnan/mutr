@@ -13,11 +13,23 @@ set_target_properties(multiThreadRedis PROPERTIES
                         CXX_STANDARD_REQUIRED ON # If the compiler does not support C++17, fail loudly instead of silently downgrading.
                         CXX_EXTENSIONS OFF) # Disables GNU-specific extensions (like gnu++17). Without this, GCC defaults to gnu++17 instead of pure c++17, which can hide portability bugs that would break on MSVC or Clang.
 
-target_compile_options(multiThreadRedis PRIVATE 
+target_compile_options(multiThreadRedis PRIVATE
                                             -Wall # Adds the -Wall flag to the compiler. This is a good practice to catch common mistakes and improve code quality.
                                             -Wextra # Adds the -Wextra flag to the compiler. This is a good practice to catch common mistakes and improve code quality.
-                                            $<$<CONFIG:Debug>:-g -O0 -fsanitize=address> # Adds the -g -O0 -fsanitize=address flags to the compiler when the build type is Debug.
+                                            $<$<CONFIG:Debug>:-g>
+                                            $<$<CONFIG:Debug>:-O0>
                                             $<$<CONFIG:Release>:-O2>) # Adds the -O2 flags to the compiler when the build type is Release.
 
-target_link_options(multiThreadRedis PRIVATE 
-                                            $<$<CONFIG:Debug>:-fsanitize=address>) # Adds the -fsanitize=address flag to the linker when the build type is Debug.
+# AddressSanitizer is opt-in. On macOS 26 (Darwin 25) with Apple Clang 17, ASan
+# deadlocks during process init: InitializeShadowMemory() -> get_dyld_hdr() ->
+# dyld_shared_cache_iterate_text_swift() mallocs, which re-enters AsanInitFromRtl()
+# and spins forever on StaticSpinMutex. The process burns ~99% CPU, never reaches
+# main(), and produces no output. Enable later with: cmake -DENABLE_ASAN=ON ..
+option(ENABLE_ASAN "Enable AddressSanitizer in Debug builds" OFF)
+if(ENABLE_ASAN)
+    if(APPLE)
+        message(WARNING "AddressSanitizer currently deadlocks at startup on this macOS/Xcode combination. The binary will hang before main().")
+    endif()
+    target_compile_options(multiThreadRedis PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
+    target_link_options(multiThreadRedis PRIVATE $<$<CONFIG:Debug>:-fsanitize=address>)
+endif()
