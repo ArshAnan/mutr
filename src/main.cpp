@@ -8,10 +8,11 @@
 namespace {
 
 void usage(std::ostream& out) {
-    out << "Usage: mutr [--port N] [--verbose] [--threads N]\n"
+    out << "Usage: mutr [--port N] [--verbose] [--threads N] [--shards N]\n"
         << "  --port N      TCP port (default 6379, 0 lets the kernel pick)\n"
         << "  --verbose     log accepts and closes\n"
-        << "  --threads N   accepted for later; only 1 is implemented (default 1)\n";
+        << "  --threads N   accepted for later; only 1 is implemented (default 1)\n"
+        << "  --shards N    power-of-two shard count, at most 1048576 (default 64)\n";
 }
 
 }  // namespace
@@ -58,6 +59,22 @@ int main(int argc, char** argv) {
                 return 2;
             }
             config.threads = threads;
+            continue;
+        }
+        if (arg == "--shards") {
+            if (i + 1 >= argc) {
+                usage(std::cerr);
+                return 2;
+            }
+            ++i;
+            const std::string value = argv[i];
+            int shards = 0;
+            const auto res = std::from_chars(value.data(), value.data() + value.size(), shards);
+            if (res.ec != std::errc() || res.ptr != value.data() + value.size() || shards < 1) {
+                std::cerr << "invalid shards\n";
+                return 2;
+            }
+            config.shards = shards;
             continue;
         }
         usage(std::cerr);

@@ -7,6 +7,8 @@ struct Config {
     bool verbose = false;
     // Parsed and stored. Values other than 1 are rejected: there is still one thread.
     int threads = 1;
+    // Power of two. The process rejects any other value.
+    int shards = 64;
 };
 
 // One thread, level-triggered event loop. Returns 1 if the socket cannot be

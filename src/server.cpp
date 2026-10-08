@@ -75,7 +75,8 @@ int listenTcp(std::uint16_t port, std::uint16_t* bound) {
 
 class Server {
 public:
-    explicit Server(const Config& config) : config_(config) {}
+    explicit Server(const Config& config)
+        : config_(config), store_(static_cast<std::size_t>(config.shards)) {}
 
     int run() {
         if (config_.threads != 1) {
@@ -302,6 +303,11 @@ private:
 }  // namespace
 
 int runServer(const Config& config) {
+    const int shards = config.shards;
+    if (shards < 1 || static_cast<unsigned>(shards) > (1u << 20) || (shards & (shards - 1)) != 0) {
+        std::cerr << "invalid shards\n";
+        return 2;
+    }
     Server server(config);
     return server.run();
 }

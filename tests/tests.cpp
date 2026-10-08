@@ -6,6 +6,8 @@
 #include "store.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -16,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -973,6 +976,184 @@ void test_concurrent_connections() {
     }
 }
 
+void test_shard_distribution() {
+    mutr::Store store(64);
+    const std::string sample = "alpha";
+    const auto hash = mutr::Store::hashKey(sample);
+    CHECK(store.shardIndex(sample) == static_cast<std::size_t>(hash >> (64 - 6)));
+    CHECK(store.shardIndex(sample) < 64);
+
+    bool high_differs_from_low = false;
+    for (int i = 0; i < 1000; ++i) {
+        const std::string key = "k" + std::to_string(i);
+        const auto h = mutr::Store::hashKey(key);
+        const auto high = static_cast<std::size_t>(h >> 58);
+        const auto low = static_cast<std::size_t>(h & 63);
+        if (high == low) {
+            continue;
+        }
+        high_differs_from_low = true;
+        CHECK(store.shardIndex(key) == high);
+        CHECK(store.shardIndex(key) != low);
+        break;
+    }
+    CHECK(high_differs_from_low);
+
+    std::array<int, 64> counts{};
+    for (int i = 0; i < 6400; ++i) {
+        const std::size_t shard = store.shardIndex("key-" + std::to_string(i));
+        CHECK(shard < counts.size());
+        if (shard < counts.size()) {
+            ++counts[shard];
+        }
+    }
+    int used = 0;
+    for (int count : counts) {
+        if (count > 0) {
+            ++used;
+        }
+    }
+    CHECK(used == 64);
+
+    mutr::Store one(1);
+    CHECK(one.shardCount() == 1);
+    CHECK(one.shardIndex("a") == 0);
+    CHECK(one.shardIndex("other") == 0);
+}
+
+void test_incr_atomicity() {
+    mutr::Store store(64);
+    constexpr int kThreads = 8;
+    constexpr int kEach = 1000;
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&store] {
+            for (int n = 0; n < kEach; ++n) {
+                store.incr("same");
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    const auto value = store.get("same");
+    CHECK(value.has_value());
+    CHECK(value && *value == std::to_string(kThreads * kEach));
+}
+
+void test_expiry_under_lock() {
+    mutr::Store store(32);
+    const auto t0 = std::chrono::steady_clock::time_point{};
+    store.setNowForTest(t0);
+    CHECK(store.set("same", "10", std::chrono::milliseconds(5)));
+    store.setNowForTest(t0 + std::chrono::milliseconds(5));
+
+    constexpr int kThreads = 8;
+    constexpr int kEach = 100;
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        threads.emplace_back([&store] {
+            for (int n = 0; n < kEach; ++n) {
+                store.incr("same");
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    const auto value = store.get("same");
+    CHECK(value.has_value());
+    // The expired "10" must not survive into the increment. 8*100 starts at 0.
+    CHECK(value && *value == std::to_string(kThreads * kEach));
+}
+
+void test_mset_snapshot() {
+    mutr::Store store(64);
+    std::string a;
+    std::string b;
+    for (int i = 0; i < 10000 && b.empty(); ++i) {
+        const std::string key = "k" + std::to_string(i);
+        if (a.empty()) {
+            a = key;
+        } else if (store.shardIndex(key) != store.shardIndex(a)) {
+            b = key;
+        }
+    }
+    CHECK(!a.empty());
+    CHECK(!b.empty());
+    CHECK(store.shardIndex(a) != store.shardIndex(b));
+    store.mset({a, "1", b, "2"});
+
+    std::atomic<int> bad{0};
+    auto worker = [&](bool flipped) {
+        for (int i = 0; i < 2000; ++i) {
+            if (flipped) {
+                store.mset({b, "1", a, "2"});
+            } else {
+                store.mset({a, "1", b, "2"});
+            }
+            const auto got = store.mget({a, b});
+            if (got.size() != 2 || !got[0] || !got[1]) {
+                bad.fetch_add(1);
+                continue;
+            }
+            const bool first = *got[0] == "1" && *got[1] == "2";
+            const bool second = *got[0] == "2" && *got[1] == "1";
+            if (!first && !second) {
+                bad.fetch_add(1);
+            }
+        }
+    };
+    std::thread left(worker, false);
+    std::thread right(worker, true);
+    left.join();
+    right.join();
+    CHECK(bad.load() == 0);
+}
+
+void test_shards_flag() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    int sp[2] = {-1, -1};
+    CHECK(::pipe(sp) == 0);
+    flushStdio();
+    const pid_t pid = ::fork();
+    CHECK(pid >= 0);
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        if (::dup2(sp[1], STDERR_FILENO) < 0) {
+            _exit(127);
+        }
+        ::close(sp[0]);
+        ::close(sp[1]);
+        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--shards", "3", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    ::close(sp[1]);
+    int status = 0;
+    CHECK(::waitpid(pid, &status, 0) == pid);
+    std::string err;
+    char buf[256];
+    while (true) {
+        const ssize_t n = ::read(sp[0], buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        err.append(buf, static_cast<std::size_t>(n));
+    }
+    ::close(sp[0]);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 2);
+    CHECK(err.find("invalid shards") != std::string::npos);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1004,6 +1185,16 @@ int main(int argc, char** argv) {
     test_threads_flag();
     std::cout << "RUN test_concurrent_connections\n";
     test_concurrent_connections();
+    std::cout << "RUN test_shard_distribution\n";
+    test_shard_distribution();
+    std::cout << "RUN test_incr_atomicity\n";
+    test_incr_atomicity();
+    std::cout << "RUN test_expiry_under_lock\n";
+    test_expiry_under_lock();
+    std::cout << "RUN test_mset_snapshot\n";
+    test_mset_snapshot();
+    std::cout << "RUN test_shards_flag\n";
+    test_shards_flag();
 
     if (g_failed != 0) {
         std::cout << "failed " << g_failed << " checks\n";

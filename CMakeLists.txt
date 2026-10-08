@@ -13,6 +13,8 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 add_compile_options(-Wall -Wextra)
 
+find_package(Threads REQUIRED)
+
 option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
 option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
 option(ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
@@ -61,6 +63,7 @@ else()
     message(FATAL_ERROR "mutr's event loop supports macOS (kqueue) and Linux (epoll), not ${CMAKE_SYSTEM_NAME}")
 endif()
 target_include_directories(mutr_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mutr_core PUBLIC Threads::Threads)
 if(MUTR_SAN_FLAGS)
     target_compile_options(mutr_core PUBLIC ${MUTR_SAN_FLAGS})
     target_link_options(mutr_core PUBLIC ${MUTR_SAN_FLAGS})
