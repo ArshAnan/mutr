@@ -599,7 +599,19 @@ int connectTcp(std::uint16_t port) {
     return -1;
 }
 
-std::uint16_t startServer(Child& child) {
+std::uint16_t startServer(Child& child, int threads = 0) {
+    if (threads <= 0) {
+        threads = 1;
+        if (const char* env = std::getenv("MUTR_TEST_THREADS")) {
+            int n = 0;
+            const char* end = env + std::strlen(env);
+            const auto res = std::from_chars(env, end, n);
+            if (res.ec == std::errc() && res.ptr == end && n >= 1) {
+                threads = n;
+            }
+        }
+    }
+    const std::string threads_arg = std::to_string(threads);
     int sp[2] = {-1, -1};
     if (::pipe(sp) != 0) {
         std::cerr << "pipe failed\n";
@@ -620,7 +632,8 @@ std::uint16_t startServer(Child& child) {
         }
         ::close(sp[0]);
         ::close(sp[1]);
-        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", "1", static_cast<char*>(nullptr));
+        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", threads_arg.c_str(),
+               static_cast<char*>(nullptr));
         _exit(127);
     }
     ::close(sp[1]);
@@ -888,6 +901,40 @@ void test_level_triggered() {
 }
 
 void test_threads_flag() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    Child child;
+    const std::uint16_t port = startServer(child, 2);
+    if (port == 0) {
+        return;
+    }
+    const int fd = connectTcp(port);
+    CHECK(fd >= 0);
+    if (fd < 0) {
+        return;
+    }
+    const std::string ping = respCommand({"PING"});
+    CHECK(mutr::writeAll(fd, ping.data(), ping.size()));
+    CHECK(expectExact(fd, "+PONG\r\n", 2000));
+    ::close(fd);
+
+    CHECK(::kill(child.pid, SIGTERM) == 0);
+    int status = 0;
+    CHECK(::waitpid(child.pid, &status, 0) == child.pid);
+    child.pid = -1;
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+}
+
+void test_shutdown_stats() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
     int sp[2] = {-1, -1};
     CHECK(::pipe(sp) == 0);
     flushStdio();
@@ -902,15 +949,45 @@ void test_threads_flag() {
         }
         ::close(sp[0]);
         ::close(sp[1]);
-        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", "2", static_cast<char*>(nullptr));
+        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", "2", "--verbose",
+                static_cast<char*>(nullptr));
         _exit(127);
     }
     ::close(sp[1]);
-    int status = 0;
-    CHECK(::waitpid(pid, &status, 0) == pid);
+    const std::string line = readLineFd(sp[0], 3000);
+    constexpr std::string_view prefix = "listening ";
+    int port = 0;
+    const bool header_ok = line.size() >= prefix.size() && line.compare(0, prefix.size(), prefix) == 0;
+    CHECK(header_ok);
+    if (header_ok) {
+        const auto res = std::from_chars(line.data() + prefix.size(), line.data() + line.size(), port);
+        CHECK(res.ec == std::errc() && res.ptr == line.data() + line.size() && port > 0);
+    }
+    if (port > 0) {
+        const int fd = connectTcp(static_cast<std::uint16_t>(port));
+        CHECK(fd >= 0);
+        if (fd >= 0) {
+            const std::string ping = respCommand({"PING"});
+            CHECK(mutr::writeAll(fd, ping.data(), ping.size()));
+            CHECK(expectExact(fd, "+PONG\r\n", 2000));
+            ::close(fd);
+        }
+    }
+    CHECK(::kill(pid, SIGTERM) == 0);
     std::string err;
-    char buf[256];
-    while (true) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              deadline - std::chrono::steady_clock::now())
+                              .count();
+        pollfd pfd{};
+        pfd.fd = sp[0];
+        pfd.events = POLLIN;
+        const int rc = ::poll(&pfd, 1, static_cast<int>(left > 0 ? left : 0));
+        if (rc <= 0) {
+            break;
+        }
+        char buf[512];
         const ssize_t n = ::read(sp[0], buf, sizeof(buf));
         if (n <= 0) {
             break;
@@ -918,9 +995,13 @@ void test_threads_flag() {
         err.append(buf, static_cast<std::size_t>(n));
     }
     ::close(sp[0]);
+    int status = 0;
+    CHECK(::waitpid(pid, &status, 0) == pid);
     CHECK(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 2);
-    CHECK(err.find("only --threads 1") != std::string::npos);
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(err.find("commands=1") != std::string::npos);
+    CHECK(err.find("bytes_in=14") != std::string::npos);
+    CHECK(err.find("bytes_out=7") != std::string::npos);
 }
 
 void test_concurrent_connections() {
@@ -1183,6 +1264,8 @@ int main(int argc, char** argv) {
     test_level_triggered();
     std::cout << "RUN test_threads_flag\n";
     test_threads_flag();
+    std::cout << "RUN test_shutdown_stats\n";
+    test_shutdown_stats();
     std::cout << "RUN test_concurrent_connections\n";
     test_concurrent_connections();
     std::cout << "RUN test_shard_distribution\n";

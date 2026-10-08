@@ -4,7 +4,8 @@
 
 namespace mutr {
 
-bool handleInput(Store& store, std::string& inbound, std::string& outbound, const Limits& limits) {
+bool handleInput(Store& store, std::string& inbound, std::string& outbound, const Limits& limits,
+                 std::uint64_t* commands) {
     std::size_t off = 0;
     bool keep = true;
     while (off < inbound.size()) {
@@ -41,6 +42,9 @@ bool handleInput(Store& store, std::string& inbound, std::string& outbound, cons
         }
         off += parsed.consumed;
         outbound += execute(store, parsed.command);
+        if (commands != nullptr) {
+            ++*commands;
+        }
     }
     if (off > 0) {
         inbound.erase(0, off);

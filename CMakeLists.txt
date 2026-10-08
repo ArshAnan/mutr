@@ -36,6 +36,12 @@ endif()
 if(APPLE AND ENABLE_TSAN)
     message(WARNING "ThreadSanitizer crashes at startup on this macOS/Apple Clang (signal 11, no report). The binary will not run.")
 endif()
+# GCC 15.2 on Linux aarch64 (Lima, Ubuntu 25.10): TSan dies with SIGILL at
+# __sigsetjmp+0 inside pthread_cond_wait. Clang 20's TSan on the same machine
+# runs. This is the toolchain, not a mutr race. Use clang++ for TSan there.
+if(ENABLE_TSAN AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    message(WARNING "GCC ThreadSanitizer SIGILLs in __sigsetjmp during pthread_cond_wait on this aarch64 machine. Configure TSan with clang++.")
+endif()
 
 set(MUTR_SAN_FLAGS "")
 if(ENABLE_ASAN)

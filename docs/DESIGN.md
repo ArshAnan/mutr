@@ -1,6 +1,6 @@
 # Design
 
-mutr is one process with a shared in-memory store. The store uses a mutex per shard. It is not lock-free. This file describes the store as it is now. The server in this revision is still one thread; threading is added in a later step and this file should be updated when that lands.
+mutr is one process. The store uses a mutex per shard. It is not lock-free. Connections are not shared between threads.
 
 ## Shard layout
 
@@ -34,9 +34,35 @@ Duplicate keys in one `EXISTS` each count, matching the single-connection behavi
 
 `setNowForTest` writes a virtual clock with no mutex. Tests call it before they start other threads. Calling it concurrently with `get` or `INCR` is a data race on that clock. Production does not call it.
 
+## Threads
+
+`--threads N` starts N worker threads. The main thread is the acceptor and does not parse or run commands. `--threads 1` is therefore two operating-system threads: one acceptor and one worker. Command execution is parallel only when N is greater than 1. The previous single-thread loop is gone on purpose. Folding accept into the worker when N is 1 would make `--threads 1` a different architecture from `--threads 2`, so the acceptor stays separate at every N.
+
+The process listens on one socket. It does not set `SO_REUSEPORT`. The acceptor is the only thread that calls `accept`. It hands each new fd to a worker round-robin, through a mutex-protected queue and a non-blocking pipe. The pipe write is skipped when one is already pending, and the worker drains the whole queue on wakeup, so a burst of accepts does not require one wakeup per connection. After that handoff the acceptor never touches the fd. The connection's buffers, event registration, parsing, and writes stay on that worker for the life of the connection.
+
+The event loop is level-triggered (epoll without `EPOLLET`, kqueue without `EV_CLEAR`). That matters for the handoff. Bytes can arrive after `accept` and before the worker registers the fd. A level-triggered loop still reports the fd as readable when it is added. An edge-triggered loop would not, and the connection would stall until another edge. Write interest is registered only while a worker has unsent bytes, same as before, or the level-triggered loop would spin.
+
+Each worker has its own `WorkerStats` object, `alignas(64)`, so the three counters sit on their own cache line. They are ordinary integers. The worker is the only writer. The acceptor adds them up after `join`, and only when `--verbose` is set, into one stderr line:
+
+```text
+stats commands=N bytes_in=N bytes_out=N
+```
+
+There is no shared atomic counter on the read or write path. Reading the counters while the worker is alive would be a data race; nothing does that.
+
+`--pin` calls `sched_setaffinity` on Linux and pins worker `i` to CPU `i % ncpu`. Off Linux the flag is accepted and does nothing. A failed pin is logged after the `listening` line and the worker still runs.
+
+`SIGINT` and `SIGTERM` write one byte to a pipe the acceptor watches. The handler does not take a lock. Workers block those two signals, so the kernel delivers them to the acceptor. The acceptor closes the listen socket, sets a stop flag on each worker, wakes it, and joins all of them. A second signal is blocked during the join so `pthread_join` is not interrupted. Each worker then writes whatever the socket accepts without waiting, and closes the connection. Waiting for a client to read, or for an idle client to disconnect, would make shutdown hang. Bytes still sitting in a full send buffer are dropped. Partial commands already in the input buffer are dropped with the connection. The store is destroyed only after every worker has been joined.
+
+The handoff queue is unbounded. A fast accept burst can grow it without a limit. Capping it would mean dropping connections, which is a different behavior, so it is not capped.
+
 ## Known limitations
 
-- The server still accepts one thread. `--threads` other than 1 is rejected.
+- `--threads 1` still has a separate acceptor thread. It does not run the whole process on one thread.
 - There is no active expiry scan. An expired key occupies its shard until the next command touches it.
 - `MSET`/`MGET`/`DEL`/`EXISTS` scale their lock hold with the number of distinct shards in the command, not with the number of keys on one shard.
 - The second hash inside `unordered_map` is extra work on every lookup. It is a consequence of using `unordered_map`, not a second shard hash.
+- Shutdown does not finish a slow client's reply. It closes once a non-blocking write would wait.
+- `--pin` does not bind the acceptor, and it is a no-op off Linux.
+- The handoff queue has no cap.
+- GCC 15.2's ThreadSanitizer on aarch64 Linux dies with SIGILL at `__sigsetjmp` inside `pthread_cond_wait` (the worker ready wait). Clang 20's ThreadSanitizer on the same machine does not. That is the compiler runtime, not a data race in this handshake.

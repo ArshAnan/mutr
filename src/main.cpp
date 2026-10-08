@@ -8,11 +8,12 @@
 namespace {
 
 void usage(std::ostream& out) {
-    out << "Usage: mutr [--port N] [--verbose] [--threads N] [--shards N]\n"
+    out << "Usage: mutr [--port N] [--verbose] [--threads N] [--shards N] [--pin]\n"
         << "  --port N      TCP port (default 6379, 0 lets the kernel pick)\n"
-        << "  --verbose     log accepts and closes\n"
-        << "  --threads N   accepted for later; only 1 is implemented (default 1)\n"
-        << "  --shards N    power-of-two shard count, at most 1048576 (default 64)\n";
+        << "  --verbose     log accepts, closes, and the shutdown stats line\n"
+        << "  --threads N   worker threads (default 1). The main thread only accepts\n"
+        << "  --shards N    power-of-two shard count, at most 1048576 (default 64)\n"
+        << "  --pin         pin each worker to a CPU (Linux only; no-op elsewhere)\n";
 }
 
 }  // namespace
@@ -75,6 +76,10 @@ int main(int argc, char** argv) {
                 return 2;
             }
             config.shards = shards;
+            continue;
+        }
+        if (arg == "--pin") {
+            config.pin = true;
             continue;
         }
         usage(std::cerr);
