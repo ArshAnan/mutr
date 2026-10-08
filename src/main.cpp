@@ -8,9 +8,10 @@
 namespace {
 
 void usage(std::ostream& out) {
-    out << "Usage: mutr [--port N] [--verbose]\n"
-        << "  --port N    TCP port (default 6379, 0 lets the kernel pick)\n"
-        << "  --verbose   log accepts and closes\n";
+    out << "Usage: mutr [--port N] [--verbose] [--threads N]\n"
+        << "  --port N      TCP port (default 6379, 0 lets the kernel pick)\n"
+        << "  --verbose     log accepts and closes\n"
+        << "  --threads N   accepted for later; only 1 is implemented (default 1)\n";
 }
 
 }  // namespace
@@ -41,6 +42,22 @@ int main(int argc, char** argv) {
                 return 2;
             }
             config.port = port;
+            continue;
+        }
+        if (arg == "--threads") {
+            if (i + 1 >= argc) {
+                usage(std::cerr);
+                return 2;
+            }
+            ++i;
+            const std::string value = argv[i];
+            int threads = 0;
+            const auto res = std::from_chars(value.data(), value.data() + value.size(), threads);
+            if (res.ec != std::errc() || res.ptr != value.data() + value.size() || threads < 1) {
+                std::cerr << "invalid threads\n";
+                return 2;
+            }
+            config.threads = threads;
             continue;
         }
         usage(std::cerr);

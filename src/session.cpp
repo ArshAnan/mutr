@@ -8,6 +8,12 @@ bool handleInput(Store& store, std::string& inbound, std::string& outbound, cons
     std::size_t off = 0;
     bool keep = true;
     while (off < inbound.size()) {
+        // Stop once replies exceed the cap so one read cannot grow output
+        // without bound. One reply may still be larger than the cap (a big GET).
+        // The caller flushes and calls again; unparsed commands stay in inbound.
+        if (outbound.size() > limits.max_buffer) {
+            break;
+        }
         const ParseResult parsed = parseOne(
             std::string_view(inbound.data() + off, inbound.size() - off), limits);
         if (parsed.status == ParseStatus::NeedMoreData) {

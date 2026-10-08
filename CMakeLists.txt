@@ -52,6 +52,13 @@ add_library(mutr_core STATIC
     src/net.cpp
     src/session.cpp
     src/server.cpp)
+if(APPLE)
+    target_sources(mutr_core PRIVATE src/event_loop_kqueue.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(mutr_core PRIVATE src/event_loop_epoll.cpp)
+else()
+    message(FATAL_ERROR "mutr's event loop supports macOS (kqueue) and Linux (epoll), not ${CMAKE_SYSTEM_NAME}")
+endif()
 target_include_directories(mutr_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(MUTR_SAN_FLAGS)
     target_compile_options(mutr_core PUBLIC ${MUTR_SAN_FLAGS})

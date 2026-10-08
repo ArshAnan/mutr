@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "event_loop.h"
 #include "net.h"
 #include "resp.h"
 #include "session.h"
@@ -592,7 +593,7 @@ std::uint16_t startServer(Child& child) {
         }
         ::close(sp[0]);
         ::close(sp[1]);
-        ::execl(g_bin.c_str(), "mutr", "--port", "0", static_cast<char*>(nullptr));
+        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", "1", static_cast<char*>(nullptr));
         _exit(127);
     }
     ::close(sp[1]);
@@ -780,6 +781,173 @@ void test_live_server() {
     }
 }
 
+void test_output_budget() {
+    mutr::Store store;
+    mutr::Limits limits;
+    // One PING request is 14 bytes, so the cap must allow a command through.
+    // Replies are 7 bytes; 40 stops the batch before every PING is answered.
+    limits.max_buffer = 40;
+    std::string pending;
+    for (int i = 0; i < 12; ++i) {
+        pending += respCommand({"PING"});
+    }
+    std::string all;
+    int rounds = 0;
+    while (!pending.empty() && rounds < 10) {
+        std::string out;
+        CHECK(mutr::handleInput(store, pending, out, limits));
+        CHECK(!out.empty());
+        all += out;
+        ++rounds;
+    }
+    CHECK(pending.empty());
+    CHECK(rounds > 1);
+    std::string expect;
+    for (int i = 0; i < 12; ++i) {
+        expect += "+PONG\r\n";
+    }
+    CHECK(all == expect);
+}
+
+void test_level_triggered() {
+    mutr::EventLoop loop;
+    CHECK(loop.ok());
+    int sv[2] = {-1, -1};
+    CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    CHECK(mutr::setNonBlocking(sv[0]));
+    CHECK(mutr::setNonBlocking(sv[1]));
+    CHECK(loop.add(sv[0], true, false));
+
+    auto ev = loop.wait(30);
+    CHECK(ev.empty());
+    CHECK(::send(sv[1], "hi", 2, 0) == 2);
+    ev = loop.wait(200);
+    CHECK(ev.size() == 1);
+    CHECK(ev[0].fd == sv[0]);
+    CHECK(ev[0].readable);
+    ev = loop.wait(200);
+    CHECK(ev.size() == 1);
+    CHECK(ev[0].readable);
+
+    char tmp[8] = {};
+    CHECK(::recv(sv[0], tmp, sizeof(tmp), 0) == 2);
+    ev = loop.wait(30);
+    CHECK(ev.empty());
+
+    CHECK(loop.update(sv[0], true, true));
+    ev = loop.wait(200);
+    bool writable = false;
+    for (const auto& fired : ev) {
+        if (fired.fd == sv[0] && fired.writable) {
+            writable = true;
+        }
+    }
+    CHECK(writable);
+    ev = loop.wait(200);
+    writable = false;
+    for (const auto& fired : ev) {
+        if (fired.writable) {
+            writable = true;
+        }
+    }
+    CHECK(writable);
+    CHECK(loop.update(sv[0], true, false));
+    ev = loop.wait(30);
+    for (const auto& fired : ev) {
+        CHECK(!fired.writable);
+    }
+    ::close(sv[0]);
+    ::close(sv[1]);
+}
+
+void test_threads_flag() {
+    int sp[2] = {-1, -1};
+    CHECK(::pipe(sp) == 0);
+    const pid_t pid = ::fork();
+    CHECK(pid >= 0);
+    if (pid < 0) {
+        return;
+    }
+    if (pid == 0) {
+        if (::dup2(sp[1], STDERR_FILENO) < 0) {
+            _exit(127);
+        }
+        ::close(sp[0]);
+        ::close(sp[1]);
+        ::execl(g_bin.c_str(), "mutr", "--port", "0", "--threads", "2", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    ::close(sp[1]);
+    int status = 0;
+    CHECK(::waitpid(pid, &status, 0) == pid);
+    std::string err;
+    char buf[256];
+    while (true) {
+        const ssize_t n = ::read(sp[0], buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        err.append(buf, static_cast<std::size_t>(n));
+    }
+    ::close(sp[0]);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 2);
+    CHECK(err.find("only --threads 1") != std::string::npos);
+}
+
+void test_concurrent_connections() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    Child child;
+    const std::uint16_t port = startServer(child);
+    if (port == 0) {
+        return;
+    }
+    constexpr int kClients = 64;
+    std::vector<int> fds;
+    fds.reserve(kClients);
+    for (int i = 0; i < kClients; ++i) {
+        const int fd = connectTcp(port);
+        if (fd < 0) {
+            CHECK(fd >= 0);
+            break;
+        }
+        fds.push_back(fd);
+    }
+    CHECK(static_cast<int>(fds.size()) == kClients);
+
+    const std::string partial = "*1\r\n$4\r\nPI";
+    for (int fd : fds) {
+        CHECK(mutr::writeAll(fd, partial.data(), partial.size()));
+    }
+    for (int fd : fds) {
+        CHECK(mutr::writeAll(fd, "NG\r\n", 4));
+    }
+    for (int fd : fds) {
+        CHECK(expectExact(fd, "+PONG\r\n", 2000));
+    }
+
+    for (int i = 0; i < static_cast<int>(fds.size()); ++i) {
+        const std::string key = "c" + std::to_string(i);
+        const std::string value = "v" + std::to_string(i);
+        std::string req = respCommand({"SET", key, value});
+        req += respCommand({"GET", key});
+        CHECK(mutr::writeAll(fds[static_cast<std::size_t>(i)], req.data(), req.size()));
+    }
+    for (int i = 0; i < static_cast<int>(fds.size()); ++i) {
+        CHECK(expectExact(fds[static_cast<std::size_t>(i)], "+OK\r\n", 2000));
+        std::string value;
+        CHECK(readBulk(fds[static_cast<std::size_t>(i)], value, 2000));
+        CHECK(value == "v" + std::to_string(i));
+    }
+    for (int fd : fds) {
+        ::close(fd);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -803,6 +971,14 @@ int main(int argc, char** argv) {
     test_writes();
     std::cout << "RUN test_live_server\n";
     test_live_server();
+    std::cout << "RUN test_output_budget\n";
+    test_output_budget();
+    std::cout << "RUN test_level_triggered\n";
+    test_level_triggered();
+    std::cout << "RUN test_threads_flag\n";
+    test_threads_flag();
+    std::cout << "RUN test_concurrent_connections\n";
+    test_concurrent_connections();
 
     if (g_failed != 0) {
         std::cout << "failed " << g_failed << " checks\n";
