@@ -32,6 +32,13 @@ namespace {
 int g_failed = 0;
 std::string g_bin;
 
+// fork duplicates the C++ stream buffers. TSan flushes them in the child,
+// which reprints every line still sitting in the parent buffer.
+void flushStdio() {
+    std::cout.flush();
+    std::cerr.flush();
+}
+
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) {                                                              \
@@ -445,14 +452,30 @@ void test_writes() {
     CHECK(filled > 0);
     const auto again = mutr::writeSome(sv[0], "y", 1);
     CHECK(again.kind == mutr::WriteKind::Blocked);
-    char one = 0;
-    CHECK(::recv(sv[1], &one, 1, 0) == 1);
-    const auto after = mutr::writeSome(sv[0], "y", 1);
-    CHECK(after.kind == mutr::WriteKind::Ok);
-    CHECK(after.n == 1);
+    // Linux unix-stream sockets account buffer space per skb. Reading one
+    // byte does not free that skb, so a 1-byte send can stay EAGAIN until
+    // the peer consumes a whole chunk. Drain until a 1-byte write fits.
+    bool wrote_after_drain = false;
+    for (int i = 0; i < 64 && !wrote_after_drain; ++i) {
+        char buf[4096];
+        const ssize_t n = ::recv(sv[1], buf, sizeof(buf), 0);
+        CHECK(n > 0);
+        if (n <= 0) {
+            break;
+        }
+        const auto after = mutr::writeSome(sv[0], "y", 1);
+        if (after.kind == mutr::WriteKind::Blocked) {
+            continue;
+        }
+        CHECK(after.kind == mutr::WriteKind::Ok);
+        CHECK(after.n == 1);
+        wrote_after_drain = true;
+    }
+    CHECK(wrote_after_drain);
     ::close(sv[0]);
     ::close(sv[1]);
 
+    flushStdio();
     const pid_t pid = ::fork();
     CHECK(pid >= 0);
     if (pid < 0) {
@@ -580,6 +603,7 @@ std::uint16_t startServer(Child& child) {
         ++g_failed;
         return 0;
     }
+    flushStdio();
     const pid_t pid = ::fork();
     if (pid < 0) {
         ::close(sp[0]);
@@ -863,6 +887,7 @@ void test_level_triggered() {
 void test_threads_flag() {
     int sp[2] = {-1, -1};
     CHECK(::pipe(sp) == 0);
+    flushStdio();
     const pid_t pid = ::fork();
     CHECK(pid >= 0);
     if (pid < 0) {

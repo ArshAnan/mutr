@@ -16,6 +16,7 @@ add_compile_options(-Wall -Wextra)
 option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
 option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
 option(ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+# The same switches are the asan, tsan, and ubsan configure presets.
 
 # Checked on macOS 27.0 (Darwin 27.0.0) with Apple Clang 17.0.0:
 # ASan hangs before main (AsanInitFromRtl -> InitializeShadowMemory -> malloc
