@@ -1235,6 +1235,278 @@ void test_shards_flag() {
     CHECK(err.find("invalid shards") != std::string::npos);
 }
 
+std::uint64_t valueChecksum(std::string_view key, std::uint64_t version) {
+    std::uint64_t hash = 14695981039346656037ull;
+    for (unsigned char c : key) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    for (int i = 0; i < 8; ++i) {
+        hash ^= static_cast<unsigned char>(version >> (i * 8));
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string taggedValue(const std::string& key, std::uint64_t version) {
+    return key + ":" + std::to_string(version) + ":" + std::to_string(valueChecksum(key, version));
+}
+
+bool taggedValueOk(const std::string& key, const std::string& value) {
+    const std::string prefix = key + ":";
+    if (value.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    const std::string rest = value.substr(prefix.size());
+    const auto colon = rest.rfind(':');
+    if (colon == std::string::npos || colon == 0) {
+        return false;
+    }
+    std::uint64_t version = 0;
+    std::uint64_t sum = 0;
+    const auto ver = std::from_chars(rest.data(), rest.data() + colon, version);
+    const auto chk = std::from_chars(rest.data() + colon + 1, rest.data() + rest.size(), sum);
+    if (ver.ec != std::errc() || ver.ptr != rest.data() + colon || chk.ec != std::errc() ||
+        chk.ptr != rest.data() + rest.size()) {
+        return false;
+    }
+    return sum == valueChecksum(key, version);
+}
+
+void test_concurrent_incr() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    Child child;
+    const std::uint16_t port = startServer(child);
+    if (port == 0) {
+        return;
+    }
+    constexpr int kClients = 8;
+    constexpr int kEach = 100;
+    std::atomic<int> bad{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kClients);
+    for (int c = 0; c < kClients; ++c) {
+        threads.emplace_back([port, &bad] {
+            const int fd = connectTcp(port);
+            if (fd < 0) {
+                bad.fetch_add(1);
+                return;
+            }
+            const std::string cmd = respCommand({"INCR", "counter"});
+            std::string batch;
+            batch.reserve(cmd.size() * static_cast<std::size_t>(kEach));
+            for (int i = 0; i < kEach; ++i) {
+                batch += cmd;
+            }
+            if (!mutr::writeAll(fd, batch.data(), batch.size())) {
+                bad.fetch_add(1);
+            }
+            for (int i = 0; i < kEach; ++i) {
+                const std::string line = readLineFd(fd, 5000);
+                if (line.empty() || line[0] != ':') {
+                    bad.fetch_add(1);
+                }
+            }
+            ::close(fd);
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    CHECK(bad.load() == 0);
+    const int fd = connectTcp(port);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        const std::string get = respCommand({"GET", "counter"});
+        CHECK(mutr::writeAll(fd, get.data(), get.size()));
+        std::string value;
+        CHECK(readBulk(fd, value, 5000));
+        CHECK(value == std::to_string(kClients * kEach));
+        ::close(fd);
+    }
+}
+
+void test_checksum_values() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    Child child;
+    const std::uint16_t port = startServer(child);
+    if (port == 0) {
+        return;
+    }
+    constexpr int kKeys = 4;
+    constexpr int kWriters = 4;
+    constexpr int kReaders = 4;
+    constexpr int kWrites = 150;
+    std::array<std::atomic<std::uint64_t>, kKeys> versions;
+    for (auto& version : versions) {
+        version.store(0);
+    }
+    std::atomic<int> bad{0};
+    std::vector<std::thread> threads;
+    for (int w = 0; w < kWriters; ++w) {
+        threads.emplace_back([port, w, &versions, &bad] {
+            const int fd = connectTcp(port);
+            if (fd < 0) {
+                bad.fetch_add(1);
+                return;
+            }
+            for (int n = 0; n < kWrites; ++n) {
+                const int key_i = (w + n) % kKeys;
+                const std::string key = "s" + std::to_string(key_i);
+                const std::uint64_t version = versions[static_cast<std::size_t>(key_i)].fetch_add(1) + 1;
+                const std::string req = respCommand({"SET", key, taggedValue(key, version)});
+                if (!mutr::writeAll(fd, req.data(), req.size())) {
+                    bad.fetch_add(1);
+                    break;
+                }
+                const std::string line = readLineFd(fd, 5000);
+                if (line != "+OK\r") {
+                    bad.fetch_add(1);
+                    break;
+                }
+            }
+            ::close(fd);
+        });
+    }
+    for (int r = 0; r < kReaders; ++r) {
+        threads.emplace_back([port, r, &bad] {
+            const int fd = connectTcp(port);
+            if (fd < 0) {
+                bad.fetch_add(1);
+                return;
+            }
+            for (int n = 0; n < kWrites; ++n) {
+                const std::string key = "s" + std::to_string((r + n) % kKeys);
+                const std::string req = respCommand({"GET", key});
+                if (!mutr::writeAll(fd, req.data(), req.size())) {
+                    bad.fetch_add(1);
+                    break;
+                }
+                const std::string header = readLineFd(fd, 5000);
+                if (header == "$-1\r") {
+                    continue;
+                }
+                if (header.size() < 2 || header[0] != '$') {
+                    bad.fetch_add(1);
+                    break;
+                }
+                int len = 0;
+                const auto parsed = std::from_chars(header.data() + 1, header.data() + header.size() - 1, len);
+                if (parsed.ec != std::errc() || len < 0) {
+                    bad.fetch_add(1);
+                    break;
+                }
+                std::string value(static_cast<std::size_t>(len), '\0');
+                char crlf[2] = {};
+                if ((len > 0 && !readExact(fd, value.data(), value.size(), 5000)) ||
+                    !readExact(fd, crlf, 2, 5000) || crlf[0] != '\r' || crlf[1] != '\n' ||
+                    !taggedValueOk(key, value)) {
+                    bad.fetch_add(1);
+                    break;
+                }
+            }
+            ::close(fd);
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    CHECK(bad.load() == 0);
+}
+
+void test_connection_churn() {
+    if (g_bin.empty() || ::access(g_bin.c_str(), X_OK) != 0) {
+        std::cerr << "server binary not executable: " << g_bin << "\n";
+        ++g_failed;
+        return;
+    }
+    Child child;
+    const std::uint16_t port = startServer(child);
+    if (port == 0) {
+        return;
+    }
+    std::atomic<int> bad{0};
+    std::atomic<int> incs{0};
+    std::atomic<bool> run{true};
+    std::thread steady([port, &bad, &incs, &run] {
+        const int fd = connectTcp(port);
+        if (fd < 0) {
+            bad.fetch_add(1);
+            return;
+        }
+        const std::string cmd = respCommand({"INCR", "churn"});
+        while (run.load()) {
+            if (!mutr::writeAll(fd, cmd.data(), cmd.size())) {
+                bad.fetch_add(1);
+                break;
+            }
+            const std::string line = readLineFd(fd, 5000);
+            if (line.empty() || line[0] != ':') {
+                bad.fetch_add(1);
+                break;
+            }
+            incs.fetch_add(1);
+        }
+        ::close(fd);
+    });
+    std::vector<std::thread> churn;
+    for (int i = 0; i < 16; ++i) {
+        churn.emplace_back([port, i, &bad] {
+            for (int j = 0; j < 20; ++j) {
+                const int fd = connectTcp(port);
+                if (fd < 0) {
+                    bad.fetch_add(1);
+                    continue;
+                }
+                const int kind = (i + j) % 3;
+                if (kind == 0) {
+                    const char partial[] = "*1\r\n$4\r\nPI";
+                    mutr::writeAll(fd, partial, sizeof(partial) - 1);
+                } else if (kind == 1) {
+                    std::string batch;
+                    for (int n = 0; n < 8; ++n) {
+                        batch += respCommand({"PING"});
+                    }
+                    mutr::writeAll(fd, batch.data(), batch.size());
+                } else {
+                    std::string req = respCommand({"SET", "t", "v"});
+                    req += respCommand({"GET", "t"});
+                    mutr::writeAll(fd, req.data(), req.size() / 2);
+                }
+                ::close(fd);
+            }
+        });
+    }
+    for (auto& thread : churn) {
+        thread.join();
+    }
+    run.store(false);
+    steady.join();
+    CHECK(bad.load() == 0);
+
+    const int fd = connectTcp(port);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        const std::string get = respCommand({"GET", "churn"});
+        CHECK(mutr::writeAll(fd, get.data(), get.size()));
+        std::string value;
+        CHECK(readBulk(fd, value, 5000));
+        CHECK(value == std::to_string(incs.load()));
+        const std::string ping = respCommand({"PING"});
+        CHECK(mutr::writeAll(fd, ping.data(), ping.size()));
+        CHECK(expectExact(fd, "+PONG\r\n", 5000));
+        ::close(fd);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1278,6 +1550,12 @@ int main(int argc, char** argv) {
     test_mset_snapshot();
     std::cout << "RUN test_shards_flag\n";
     test_shards_flag();
+    std::cout << "RUN test_concurrent_incr\n";
+    test_concurrent_incr();
+    std::cout << "RUN test_checksum_values\n";
+    test_checksum_values();
+    std::cout << "RUN test_connection_churn\n";
+    test_connection_churn();
 
     if (g_failed != 0) {
         std::cout << "failed " << g_failed << " checks\n";
