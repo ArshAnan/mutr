@@ -1,0 +1,29 @@
+redis CONFIG GET (maxmemory, appendonly, save):
+maxmemory
+0
+appendonly
+no
+save
+
+0 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+1 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+2 same=True error=False mutr=b'+OK\r\n' redis=b'+OK\r\n'
+3 same=True error=False mutr=b'$3\r\nbar\r\n' redis=b'$3\r\nbar\r\n'
+4 same=True error=False mutr=b'$-1\r\n' redis=b'$-1\r\n'
+5 same=True error=False mutr=b':1\r\n' redis=b':1\r\n'
+6 same=True error=False mutr=b':2\r\n' redis=b':2\r\n'
+7 same=True error=False mutr=b'+OK\r\n' redis=b'+OK\r\n'
+8 same=True error=False mutr=b'$64\r\n\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\'()*+,-./0123456789:;<=>?\r\n' redis=b'$64\r\n\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\'()*+,-./0123456789:;<=>?\r\n'
+9 same=True error=False mutr=b'+OK\r\n' redis=b'+OK\r\n'
+10 same=True error=False mutr=b'$5\r\na\x00b\xffc\r\n' redis=b'$5\r\na\x00b\xffc\r\n'
+11 same=True error=False mutr=b'+OK\r\n' redis=b'+OK\r\n'
+12 same=True error=False mutr=b'*3\r\n$1\r\n1\r\n$1\r\n2\r\n$-1\r\n' redis=b'*3\r\n$1\r\n1\r\n$1\r\n2\r\n$-1\r\n'
+13 same=True error=False mutr=b':1\r\n' redis=b':1\r\n'
+14 same=True error=False mutr=b':1\r\n' redis=b':1\r\n'
+15 same=True error=False mutr=b':0\r\n' redis=b':0\r\n'
+16 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+17 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+18 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+19 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+20 same=True error=False mutr=b'+PONG\r\n' redis=b'+PONG\r\n'
+mismatches_or_errors 0
