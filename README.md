@@ -67,4 +67,4 @@ The timed matrix is `python3 bench/run_matrix.py`. It does not run in CI. It exp
 
 ## CI
 
-The workflow badge is added with the GitHub Actions workflow.
+[![CI](https://github.com/ArshAnan/mutr/actions/workflows/ci.yml/badge.svg)](https://github.com/ArshAnan/mutr/actions/workflows/ci.yml)

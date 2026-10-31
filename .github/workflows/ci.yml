@@ -1,0 +1,98 @@
+# No actions/cache. Release objects and sanitizer objects must not share a cache.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake redis-tools
+      - name: Configure and build
+        env:
+          CXX: g++
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+      - name: Test
+        run: ctest --test-dir build/release --output-on-failure
+
+  linux-asan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        threads: [1, 2, 4, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake redis-tools
+      - name: Configure and build
+        env:
+          CXX: g++
+        run: |
+          cmake --preset asan -DENABLE_UBSAN=ON
+          cmake --build --preset asan
+      - name: Test
+        env:
+          MUTR_TEST_THREADS: ${{ matrix.threads }}
+        run: ctest --test-dir build/asan --output-on-failure
+
+  linux-tsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        threads: [1, 2, 4, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-rt-dev cmake redis-tools
+          if ! echo 'int main(){return 0;}' | clang++ -x c++ -fsanitize=thread - -o /tmp/tsan-link-check; then
+            sudo apt-get install -y g++-14
+          fi
+          rm -f /tmp/tsan-link-check
+      - name: Configure and build
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake --preset tsan
+          cmake --build --preset tsan
+      - name: Relax mmap randomization
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Test
+        env:
+          MUTR_TEST_THREADS: ${{ matrix.threads }}
+        run: ctest --test-dir build/tsan --output-on-failure
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [release, ubsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install redis
+        run: brew install redis
+      - name: Configure and build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
