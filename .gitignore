@@ -17,3 +17,7 @@ bench/results/raw/
 bench/results/progress.log
 
 .DS_Store
+
+# Generated architecture notes. DESIGN.md stays tracked.
+docs/pdf/
+docs/mutr-architecture.html
